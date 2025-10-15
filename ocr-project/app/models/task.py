@@ -24,6 +24,7 @@ class Task(Base):
         ForeignKey("files.id"),
         nullable=False,
     )
+    task_id = Column(String, nullable=False, unique=True)
     status = Column(
         Enum(TaskStatus),
         nullable=False,
