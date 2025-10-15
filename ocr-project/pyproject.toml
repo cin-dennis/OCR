@@ -10,6 +10,7 @@ dependencies = [
     "anyio==4.11.0",
     "argon2-cffi==25.1.0",
     "argon2-cffi-bindings==25.1.0",
+    "celery>=5.5.3",
     "certifi==2025.10.5",
     "cffi==2.0.0",
     "cfgv==3.4.0",

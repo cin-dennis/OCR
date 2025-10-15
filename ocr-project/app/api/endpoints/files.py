@@ -8,10 +8,9 @@ from fastapi.responses import JSONResponse
 from minio.error import S3Error
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.db.session import session
 from app.models.file import File as FileModel
 from app.models.task import TaskStatus
-from app.repository.file_repository import FileRepository
+from app.repository.file_repository import file_repo
 from app.services.file.file_service import FileService
 from app.storage.file_storage import FileStorage
 from app.type.error import ErrorResponse
@@ -20,7 +19,6 @@ BUCKET_NAME = os.environ.get("BUCKET_NAME", "files")
 ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg"}
 
 file_service = FileService(BUCKET_NAME, ALLOWED_CONTENT_TYPES)
-file_repo = FileRepository(session)
 file_storage = FileStorage(BUCKET_NAME)
 
 

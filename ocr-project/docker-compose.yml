@@ -40,7 +40,7 @@ services:
     image: redis:7
     container_name: ocr_redis
     ports:
-      - 6379:6379
+      - ${REDIS_PORT:-6379}
     healthcheck:
       test:
         - CMD
