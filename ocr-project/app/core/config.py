@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     # Database settings
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/ocr_db"
@@ -13,5 +14,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+
 
 settings = Settings()

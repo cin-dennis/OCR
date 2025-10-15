@@ -1,0 +1,69 @@
+[project]
+name = "ocr-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN401",  # any-type
+    "B008",
+    "C901",  # complex-structure
+    "D100",  # undocumented-public-module
+    "D101",  # undocumented-public-class
+    "D102",  # undocumented-public-method
+    "D103",  # undocumented-public-function
+    "D104",  # undocumented-public-package
+    "D105",  # undocumented-magic-method
+    "D106",  # undocumented-public-nested-class
+    "D107",  # undocumented-public-init
+    "D203",  # one-blank-line-before-class
+    "D213",  # multi-line-summary-second-line
+    "EM101",  # raw-string-in-exception
+    "EM102",  # f-string-in-exception
+    "FA102",  # future-required-type-annotation
+    "FIX002",  # line-contains-todo
+    "N815",  # mixed-case-variable-in-class-scope
+    "PLR0911",  # too-many-return-statements
+    "PLR0913",  # too-many-arguments
+    "RUF001",  # ambiguous-unicode-character-string
+    "S105",
+    "TD002",  # missing-todo-author
+    "TD003",  # missing-todo-link
+    "TID252",  # relative-imports
+    "TRY003",  # raise-vanilla-args
+    "FAST001",
+    "FAST002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**.py" = [
+  "PLR2004",
+  "S101",  # assert
+  "S106",
+  "SLF001",
+]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app", "tests"]
+check_untyped_defs = true
+disallow_untyped_defs = true  # for strict mypy: (this is the tricky one :-))
+disallow_untyped_calls = true
+disallow_any_generics = true
+ignore_missing_imports = true
+no_implicit_reexport = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true

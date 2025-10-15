@@ -1,7 +1,10 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, func, Integer
+
+from sqlalchemy import Column, DateTime, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
+
 from app.db.base import Base
+
 
 class File(Base):
     __tablename__ = "files"
