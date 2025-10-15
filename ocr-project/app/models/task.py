@@ -10,7 +10,7 @@ from app.models.base import Base
 
 class TaskStatus(PyEnum):
     PENDING = "pending"
-    IN_PROGRESS = "in_progress"
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
 

@@ -1,16 +1,16 @@
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.session import session
-from app.models.file import File
+from app.models.task import Task
 
 
-class FileRepository:
+class TaskRepository:
     def __init__(self) -> None:
         self.session = session
 
-    def add(self, file: File) -> None:
+    def add(self, task: Task) -> None:
         try:
-            self.session.add(file)
+            self.session.add(task)
             self.session.commit()
         except SQLAlchemyError:
             self.session.rollback()
@@ -18,18 +18,18 @@ class FileRepository:
         finally:
             self.session.close()
 
-    def get_by_id(self, file_id: str) -> File | None:
+    def get_by_id(self, task_id: str) -> Task | None:
         try:
-            return self.session.query(File).filter(File.id == file_id).first()
+            return self.session.query(Task).filter(Task.id == task_id).first()
         except SQLAlchemyError:
             self.session.rollback()
             raise
         finally:
             self.session.close()
 
-    def update(self, file: File) -> None:
+    def update(self, task: Task) -> None:
         try:
-            self.session.merge(file)
+            self.session.merge(task)
             self.session.commit()
         except SQLAlchemyError:
             self.session.rollback()
@@ -38,4 +38,4 @@ class FileRepository:
             self.session.close()
 
 
-file_repo = FileRepository()
+task_repo = TaskRepository()
