@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.db.session import session
 from app.models.file import File as FileModel
-from app.models.type import TaskStatus
+from app.models.task import TaskStatus
 from app.services.minio import minio_service
 from app.type.error import ErrorResponse
 

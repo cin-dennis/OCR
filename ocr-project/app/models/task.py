@@ -1,5 +1,7 @@
-import enum
 import uuid
+from enum import Enum as PyEnum
+from enum import auto
+from typing import Any
 
 from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -8,11 +10,20 @@ from sqlalchemy.orm import relationship
 from app.db.base import Base
 
 
-class TaskStatus(str, enum.Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
+class TaskStatus(PyEnum):
+    def _generate_next_value_(
+        self,
+        name: str,
+        _start: int,
+        _count: int,
+        _last_values: list[Any],
+    ) -> str:
+        return name.lower()
+
+    PENDING = auto()
+    IN_PROGRESS = auto()
+    COMPLETED = auto()
+    FAILED = auto()
 
 
 class Task(Base):
