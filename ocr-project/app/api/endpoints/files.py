@@ -7,7 +7,10 @@ from pathlib import Path
 from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 from minio.error import S3Error
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.db.session import session
+from app.models.file import File as FileModel
 from app.models.type import TaskStatus
 from app.services.minio import minio_service
 from app.type.error import ErrorResponse
@@ -53,6 +56,26 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
                 message=f"Failed to upload file to storage: {e}",
             ),
         )
+
+    file_model = FileModel(
+        filename=file.filename,
+        storage_path=storage_path,
+        file_type=file.content_type,
+    )
+
+    try:
+        session.add(file_model)
+        session.commit()
+    except SQLAlchemyError as e:
+        return JSONResponse(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message=f"Failed to save file metadata to database: {e}",
+            ),
+        )
+    finally:
+        session.close()
 
     return JSONResponse(
         status_code=HTTPStatus.CREATED,
