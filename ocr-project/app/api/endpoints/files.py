@@ -1,7 +1,6 @@
 import os
 import uuid
 from http import HTTPStatus
-from io import BytesIO
 from pathlib import Path
 
 from fastapi import APIRouter, File, UploadFile
@@ -12,20 +11,27 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.session import session
 from app.models.file import File as FileModel
 from app.models.task import TaskStatus
-from app.services.minio import minio_service
+from app.repository.file_repository import FileRepository
+from app.services.file.file_service import FileService
+from app.storage.file_storage import FileStorage
 from app.type.error import ErrorResponse
 
-ALLOWED_CONTENT_TYPES = ["application/pdf", "image/png", "image/jpeg"]
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "files")
+ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg"}
+
+file_service = FileService(BUCKET_NAME, ALLOWED_CONTENT_TYPES)
+file_repo = FileRepository(session)
+file_storage = FileStorage(BUCKET_NAME)
+
 
 router = APIRouter()
 
 
 @router.post("/files", status_code=HTTPStatus.ACCEPTED)
 async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
+    if not file_service.is_allowed_file_type(file.content_type):
         return JSONResponse(
-            status_code=415,
+            status_code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
             content=ErrorResponse(
                 code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
                 message=f"File type '{file.content_type}' is not allowed."
@@ -37,17 +43,8 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
     file_extension = Path(file.filename).suffix
     storage_path = f"{task_id}-{file.filename}-{file_extension}"
 
-    file_data = await file.read()
-    file_bytes_io = BytesIO(file_data)
-
     try:
-        minio_service.get_minio_client().put_object(
-            BUCKET_NAME,
-            storage_path,
-            data=file_bytes_io,
-            length=len(file_data),
-            content_type=file.content_type,
-        )
+        await file_storage.upload_file(file, storage_path, BUCKET_NAME)
     except S3Error as e:
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -64,8 +61,7 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
     )
 
     try:
-        session.add(file_model)
-        session.commit()
+        file_repo.save(file_model)
     except SQLAlchemyError as e:
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -74,8 +70,6 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
                 message=f"Failed to save file metadata to database: {e}",
             ),
         )
-    finally:
-        session.close()
 
     return JSONResponse(
         status_code=HTTPStatus.CREATED,
