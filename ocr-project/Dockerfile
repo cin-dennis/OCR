@@ -1,27 +1,25 @@
-FROM python:3.13
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential libffi-dev libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.13-slim AS build
+
+RUN apt-get update && apt-get install -y curl && \
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
-# Install uv package manager
-RUN python -m ensurepip && python -m pip install --upgrade pip \
-    && pip install uv
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-install-project
 
-# Copy only pyproject.toml first for caching
-COPY pyproject.toml pyproject.toml
+FROM python:3.13-slim AS runtime
 
-# Create uv environment and sync dependencies
-RUN uv venv
-RUN uv pip sync pyproject.toml
+WORKDIR /app
 
-# Copy the rest of the code
+COPY --from=build /root/.local/bin/uv /usr/local/bin/uv
+
+COPY --from=build /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY . .
 
 EXPOSE 8000
 
-ENV PATH="/app/.venv/bin:$PATH"
-
-CMD ["uv", "run", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uv", "run", "python", "main.py"]
