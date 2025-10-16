@@ -3,6 +3,10 @@ from io import BytesIO
 
 from minio import Minio, S3Error
 
+from app.services.minio.minio_service import (
+    ensure_bucket_exists,
+)
+
 logger = logging.getLogger(__name__)
 
 ENCODING_FORMAT = "utf-8"
@@ -12,12 +16,13 @@ class ResultStorage:
     def __init__(self, minio_client: Minio) -> None:
         self.minio_client = minio_client
 
-    async def upload_result(
+    def upload_result(
         self,
         result_data: str,
         storage_path: str,
         bucket_name: str,
     ) -> None:
+        ensure_bucket_exists(bucket_name)
         try:
             self.minio_client.put_object(
                 bucket_name,

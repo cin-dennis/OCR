@@ -31,5 +31,5 @@ class PageResult(Base):
         nullable=False,
     )
 
-    task = relationship("Task", backref="page_results", uselist=False)
-    file = relationship("File", backref="page_results", uselist=False)
+    task = relationship("Task", back_populates="page_results")
+    file = relationship("File", back_populates="page_results")

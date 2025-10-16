@@ -14,4 +14,7 @@ celery_app = Celery(
     "ocr_project",
     broker=broker_url,
     backend=result_backend_url,
+    include=[
+        "app.worker.file_process_worker",
+    ],
 )

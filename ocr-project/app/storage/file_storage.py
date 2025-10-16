@@ -4,6 +4,10 @@ from io import BytesIO
 from fastapi import UploadFile
 from minio import Minio, S3Error
 
+from app.services.minio.minio_service import (
+    ensure_bucket_exists,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -17,6 +21,7 @@ class FileStorage:
         storage_path: str,
         bucket_name: str,
     ) -> None:
+        ensure_bucket_exists(bucket_name)
         data = await file.read()
         try:
             self.minio_client.put_object(

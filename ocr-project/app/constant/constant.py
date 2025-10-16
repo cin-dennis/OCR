@@ -1,0 +1,2 @@
+BUCKET_FILE_STORAGE = "files"
+BUCKET_RESULT_STORAGE = "results"
