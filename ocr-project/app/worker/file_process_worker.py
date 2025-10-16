@@ -28,34 +28,55 @@ from .celery import celery_app
 logger = logging.getLogger(__name__)
 
 
-def get_validated_task_and_file(
-    db: Session,
-    task_id: uuid.UUID,
-) -> tuple[Task, File]:
-    task = task_repo.get_by_id(db, task_id)
-    if not task:
-        raise ValueError(f"Task with ID {task_id} not found.")
+@celery_app.task
+def process_file(task_id_str: str) -> None:
+    task_id = uuid.UUID(task_id_str)
+    db = SessionLocal()
+    try:
+        task = task_repo.get_by_id(db, task_id)
+        if not task:
+            return
 
-    file = file_repo.get_by_id(db, task.file_id)
-    if not file:
-        raise ValueError(
-            f"File with ID {task.file_id} not found for task {task_id}.",
-        )
+        file = file_repo.get_by_id(db, task.file_id)
+        if not file:
+            return
 
-    return task, file
+        task.status = TaskStatus.PROCESSING
+        db.commit()
+
+        file_data = download_file_from_minio(file.storage_path)
+
+        ocr_pages_results = process_document(file, file_data)
+
+        store_ocr_results(db, task, file, ocr_pages_results)
+
+        total_pages = len(ocr_pages_results)
+        update_task_to_completed(db, task, file, total_pages)
+
+    except (
+        ValueError,
+        RuntimeError,
+        requests.exceptions.RequestException,
+        TypeError,
+        KeyError,
+    ) as e:
+        handle_processing_error(task_id, db, str(e))
+    finally:
+        db.close()
 
 
 def download_file_from_minio(file_storage_path: str) -> bytes:
+    minio_client = get_minio_client()
+
     try:
-        minio_client = get_minio_client()
         file_object = minio_client.get_object(
             BUCKET_FILE_STORAGE,
             file_storage_path,
         )
         return file_object.read()
-    except S3Error as e:
+    except S3Error:
         logger.exception("Failed to retrieve file from MinIO")
-        raise RuntimeError(f"Failed to retrieve file from MinIO: {e}") from e
+        raise
 
 
 def process_pdf_pages(file_data: bytes, filename: str) -> list[dict[str, Any]]:
@@ -135,42 +156,33 @@ def update_task_to_completed(
 def handle_processing_error(
     task_id: uuid.UUID,
     db: Session,
-    error: Exception,
+    error: str,
 ) -> None:
     logger.exception("Processing failed for task %s", task_id)
     db.rollback()
-    update_task_status_in_new_session(task_id, TaskStatus.FAILED, str(error))
 
-
-@celery_app.task
-def process_file(task_id_str: str) -> None:
-    task_id = uuid.UUID(task_id_str)
-    db = SessionLocal()
+    session_for_update = SessionLocal()
     try:
-        task, file = get_validated_task_and_file(db, task_id)
+        task = task_repo.get_by_id(session_for_update, task_id)
+        if task:
+            task.status = TaskStatus.FAILED
+            task.error_message = str(error)
 
-        task.status = TaskStatus.PROCESSING
-        db.commit()
-
-        file_data = download_file_from_minio(file.storage_path)
-
-        ocr_pages_results = process_document(file, file_data)
-
-        store_ocr_results(db, task, file, ocr_pages_results)
-
-        total_pages = len(ocr_pages_results)
-        update_task_to_completed(db, task, file, total_pages)
-
+            session_for_update.commit()
     except (
         ValueError,
         RuntimeError,
         requests.exceptions.RequestException,
         TypeError,
         KeyError,
-    ) as e:
-        handle_processing_error(task_id, db, e)
+    ):
+        logger.exception(
+            "CRITICAL: Failed to update task %s status to FAILED.",
+            task_id,
+        )
+        session_for_update.rollback()
     finally:
-        db.close()
+        session_for_update.close()
 
 
 def call_ai_service(image_bytes: bytes, filename: str) -> str:
@@ -185,26 +197,3 @@ def call_ai_service(image_bytes: bytes, filename: str) -> str:
     except requests.exceptions.RequestException as e:
         logger.exception("Failed to call AI service for file %s", filename)
         raise RuntimeError(f"AI service request failed: {e}") from e
-
-
-def update_task_status_in_new_session(
-    task_id: uuid.UUID,
-    status: TaskStatus,
-    error_message: str | None = None,
-) -> None:
-    session = SessionLocal()
-    try:
-        task = task_repo.get_by_id(session, task_id)
-        if task:
-            task.status = status
-            task.error_message = error_message
-            session.commit()
-    except Exception:
-        logger.exception(
-            "Failed to update task %s status to %s",
-            task_id,
-            status,
-        )
-        session.rollback()
-    finally:
-        session.close()
