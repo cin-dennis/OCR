@@ -19,4 +19,10 @@ EXPOSE 8000
 
 RUN uv run alembic --version
 
+COPY ./app ./app
+COPY ./alembic ./alembic
+COPY ./alembic.ini ./alembic.ini
+
+CMD uv run alembic upgrade head
+
 CMD ["uv", "run", "python", "app/main.py"]
