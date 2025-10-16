@@ -124,7 +124,7 @@ services:
     container_name: flax
     restart: always
     ports:
-      - 8080:8080
+      - 8080:80
   pgadmin:
     image: dpage/pgadmin4
     environment:

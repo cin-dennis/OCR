@@ -77,7 +77,7 @@ async def upload_file(
         )
         saved_task = task_repo.add(db, task_model)
 
-        process_file.delay(saved_task.id)
+        process_file.delay(str(saved_task.id))
 
         db.commit()
         db.refresh(saved_task)
