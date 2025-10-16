@@ -95,6 +95,12 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+  flax:
+    image: cinamonn/prj_flax:v1.9.0
+    container_name: flax
+    restart: always
+    ports:
+      - 8080:8080
 volumes:
   postgres_data:
   minio_data:

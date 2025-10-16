@@ -14,6 +14,7 @@ from app.repository.file_repository import file_repo
 from app.services.file.file_service import FileService
 from app.storage.file_storage import FileStorage
 from app.type.error import ErrorResponse
+from app.worker.file_process_worker import process_file
 
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "files")
 ALLOWED_CONTENT_TYPES = {"application/pdf", "image/png", "image/jpeg"}
@@ -68,6 +69,8 @@ async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
                 message=f"Failed to save file metadata to database: {e}",
             ),
         )
+
+    process_file.delay(str(file_model.id))
 
     return JSONResponse(
         status_code=HTTPStatus.CREATED,
