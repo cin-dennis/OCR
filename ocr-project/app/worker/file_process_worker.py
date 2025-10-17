@@ -217,13 +217,47 @@ def call_ai_service(image_bytes: bytes, filename: str) -> str:
 
         ocr_results_list = result.get("result", [])
 
-        if ocr_results_list and isinstance(ocr_results_list[0], dict):
-            ocr_text = ocr_results_list[0].get("text", "")
-            logger.info(
-                "Successfully extracted OCR text for file: %s",
+        if not ocr_results_list:
+            logger.warning(
+                "AI service returned empty result for file: %s",
                 filename,
             )
-            return ocr_text
+            return ""
+
+        # Lấy phần tử đầu tiên
+        first_result = ocr_results_list[0]
+
+        if not isinstance(first_result, dict):
+            logger.warning(
+                "Unexpected result format for file %s: expected dict, got %s",
+                filename,
+                type(first_result).__name__,
+            )
+            return ""
+
+        layout = first_result.get("layout", [])
+
+        if not layout:
+            logger.warning(
+                "No layout data found in result for file: %s",
+                filename,
+            )
+            return ""
+
+        texts = []
+        for item in layout:
+            if item.get("type") == "textline":
+                text = item.get("text", "")
+                if text:
+                    texts.append(text)
+
+        ocr_text = "\n".join(texts)
+
+        logger.info(
+            "Successfully extracted OCR text for file: %s (length: %d chars)",
+            filename,
+            len(ocr_text),
+        )
 
     except requests.exceptions.RequestException:
         logger.exception("Failed to call AI service for file %s", filename)
@@ -235,7 +269,7 @@ def call_ai_service(image_bytes: bytes, filename: str) -> str:
         )
         raise
 
-    return ""
+    return ocr_text
 
 
 def store_ocr_results(
