@@ -59,7 +59,6 @@ def process_file(task_id_str: str) -> None:
         callback = finalize_ocr_processing.s(task_id_str=task_id_str)
 
         if "pdf" in file.file_type:
-            logger.info("Splitting PDF file: %s", file.filename)
             images = convert_from_bytes(file_data)
             header = group(
                 process_single_page_ocr.s(
@@ -70,7 +69,6 @@ def process_file(task_id_str: str) -> None:
                 for i, image in enumerate(images)
             )
         else:
-            logger.info("Processing single image file: %s", file.filename)
             header = group(
                 process_single_page_ocr.s(
                     image_bytes=file_data,
