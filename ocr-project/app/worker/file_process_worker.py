@@ -194,6 +194,7 @@ def call_ai_service(image_bytes: bytes, filename: str) -> str:
     )
     form_data = {"job_id": str(uuid.uuid4())}
     file_data = {"input": (filename, image_bytes, "image/png")}
+
     try:
         response = requests.post(
             AI_SERVICE_URL,
@@ -201,13 +202,42 @@ def call_ai_service(image_bytes: bytes, filename: str) -> str:
             files=file_data,
             timeout=300,
         )
-        response.raise_for_status()
+
         result = response.json()
-        logger.info("Received response from AI service for file: %s", filename)
-        return result.get("data", {}).get("text", "")
-    except requests.exceptions.RequestException as e:
+
+        logger.info("Full AI service response for %s: %s", filename, result)
+
+        error_code = result.get("error_code")
+        error_message = result.get("error_message")
+        if error_code or error_message:
+            error_details = (
+                f"AI service returned an application error:"
+                f" Code='{error_code}', Message='{error_message}'"
+            )
+            logger.error(error_details)
+            raise RuntimeError(error_details)
+
+        ocr_results_list = result.get("result", [])
+
+        if ocr_results_list and isinstance(ocr_results_list[0], dict):
+            ocr_text = ocr_results_list[0].get("text", "")
+            logger.info(
+                "Successfully extracted OCR text for file: %s",
+                filename,
+            )
+            return ocr_text
+
+    except requests.exceptions.RequestException:
         logger.exception("Failed to call AI service for file %s", filename)
-        raise RuntimeError(f"AI service request failed: {e}") from e
+        raise
+    except json.JSONDecodeError:
+        logger.exception(
+            "Failed to decode JSON response from AI service for file %s",
+            filename,
+        )
+        raise
+
+    return ""
 
 
 def store_ocr_results(
