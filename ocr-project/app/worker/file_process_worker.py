@@ -51,34 +51,17 @@ def process_file(task_id_str: str) -> None:
             db.commit()
             return
 
-        task.status = TaskStatus.PROCESSING
-        db.commit()
-
         file_data = download_file_from_minio(file.storage_path)
 
         callback = finalize_ocr_processing.s(task_id_str=task_id_str)
 
-        if "pdf" in file.file_type:
-            images = convert_from_bytes(file_data)
-            header = group(
-                process_single_page_ocr.s(
-                    image_bytes=img_to_bytes(image),
-                    filename=f"page_{i + 1}_{file.filename}.png",
-                    page_number=i + 1,
-                )
-                for i, image in enumerate(images)
-            )
-        else:
-            header = group(
-                process_single_page_ocr.s(
-                    image_bytes=file_data,
-                    filename=file.filename,
-                    page_number=1,
-                ),
-            )
+        header = prepare_ocr_tasks(file, file_data)
 
         job = chord(header, callback)
         job.apply_async()
+
+        task.status = TaskStatus.PROCESSING
+        db.commit()
 
     except SQLAlchemyError:
         logger.exception(
@@ -122,6 +105,26 @@ def process_file(task_id_str: str) -> None:
 
     finally:
         db.close()
+
+
+def prepare_ocr_tasks(file: File, file_data: bytes) -> group:
+    if "pdf" in file.file_type:
+        images = convert_from_bytes(file_data)
+        return group(
+            process_single_page_ocr.s(
+                image_bytes=img_to_bytes(image),
+                filename=f"page_{i + 1}_{file.filename}.png",
+                page_number=i + 1,
+            )
+            for i, image in enumerate(images)
+        )
+    return group(
+        process_single_page_ocr.s(
+            image_bytes=file_data,
+            filename=file.filename,
+            page_number=1,
+        ),
+    )
 
 
 @celery_app.task
