@@ -2,7 +2,6 @@ import json
 import logging
 import uuid
 from io import BytesIO
-from typing import Any
 
 import requests
 from celery import chord, group
@@ -21,6 +20,7 @@ from app.constant.constant import (
 )
 from app.db.session import SessionLocal
 from app.models import File, PageResult, Task
+from app.models.page_ocr_result import PageOCRResult
 from app.models.task import TaskStatus
 from app.repository.file_repository import file_repo
 from app.repository.page_result_repository import page_result_repo
@@ -132,7 +132,14 @@ def process_single_page_ocr(
 ) -> dict:
     logger.info("Processing page %d for file: %s", page_number, filename)
     ocr_text = call_ai_service(image_bytes, filename)
-    return {"page_number": page_number, "text": ocr_text}
+    logger.info(
+        "Completed OCR for page %d with result: %s",
+        page_number,
+        ocr_text,
+    )
+
+    result = PageOCRResult(page_number=page_number, text=ocr_text)
+    return result.model_dump()
 
 
 @celery_app.task
@@ -157,9 +164,13 @@ def finalize_ocr_processing(
             )
             return
 
+        typed_results = [
+            PageOCRResult(**result_dict) for result_dict in ocr_pages_results
+        ]
+
         sorted_results = sorted(
-            ocr_pages_results,
-            key=lambda r: r["page_number"],
+            typed_results,
+            key=lambda r: r.page_number,
         )
 
         store_ocr_results(db, task, file, sorted_results)
@@ -224,34 +235,7 @@ def call_ai_service(image_bytes: bytes, filename: str) -> str:
             )
             return ""
 
-        # Lấy phần tử đầu tiên
-        first_result = ocr_results_list[0]
-
-        if not isinstance(first_result, dict):
-            logger.warning(
-                "Unexpected result format for file %s: expected dict, got %s",
-                filename,
-                type(first_result).__name__,
-            )
-            return ""
-
-        layout = first_result.get("layout", [])
-
-        if not layout:
-            logger.warning(
-                "No layout data found in result for file: %s",
-                filename,
-            )
-            return ""
-
-        texts = []
-        for item in layout:
-            if item.get("type") == "textline":
-                text = item.get("text", "")
-                if text:
-                    texts.append(text)
-
-        ocr_text = "\n".join(texts)
+        ocr_text = json.dumps(ocr_results_list, ensure_ascii=False)
 
         logger.info(
             "Successfully extracted OCR text for file: %s (length: %d chars)",
@@ -276,15 +260,13 @@ def store_ocr_results(
     db: Session,
     task: Task,
     file: File,
-    ocr_pages_results: list[dict[str, Any]],
+    ocr_pages_results: list[PageOCRResult],
 ) -> None:
     minio_client = get_minio_client()
     result_storage = ResultStorage(minio_client)
-    for page_data in ocr_pages_results:
-        page_number = page_data["page_number"]
-        page_text = page_data.get("text", "")
-        result_path = f"{file.id}/page_{page_number}.json"
-        result_content = json.dumps({"text": page_text})
+    for page_result in ocr_pages_results:
+        result_path = f"{file.id}/page_{page_result.page_number}.json"
+        result_content = json.dumps({"text": page_result.text})
         result_storage.upload_result(
             result_content,
             result_path,
@@ -293,7 +275,7 @@ def store_ocr_results(
         page_result_entry = PageResult(
             task_id=task.id,
             file_id=file.id,
-            page_number=page_number,
+            page_number=page_result.page_number,
             result_path=result_path,
         )
         page_result_repo.add(db, page_result_entry)
