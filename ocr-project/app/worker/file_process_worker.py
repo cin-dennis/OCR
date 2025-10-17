@@ -186,12 +186,29 @@ def handle_processing_error(
 
 
 def call_ai_service(image_bytes: bytes, filename: str) -> str:
-    logger.info("Sending request to AI service for file: %s", filename)
-    files = {"file": (filename, image_bytes, "image/png")}
+    logger.info(
+        "Sending multipart/form-data request to AI service for file: %s",
+        filename,
+    )
+
+    form_data = {
+        "job_id": str(uuid.uuid4()),
+    }
+
+    file_data = {
+        "input": (filename, image_bytes, "image/png"),
+    }
+
     try:
-        response = requests.post(AI_SERVICE_URL, files=files, timeout=300)
+        response = requests.post(
+            AI_SERVICE_URL,
+            data=form_data,
+            files=file_data,
+            timeout=300,
+        )
         response.raise_for_status()
         result = response.json()
+        logger.info("AI service response: %s", result)
         logger.info("Received response from AI service for file: %s", filename)
         return result.get("data", {}).get("text", "")
     except requests.exceptions.RequestException as e:
