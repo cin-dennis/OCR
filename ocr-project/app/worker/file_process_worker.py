@@ -5,8 +5,13 @@ from io import BytesIO
 from typing import Any
 
 import requests
+from celery import chord, group
+from celery.exceptions import CeleryError
 from minio.error import S3Error
 from pdf2image import convert_from_bytes
+from pdf2image.exceptions import PDFPageCountError, PDFSyntaxError
+from PIL import Image
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.constant.constant import (
@@ -35,10 +40,15 @@ def process_file(task_id_str: str) -> None:
     try:
         task = task_repo.get_by_id(db, task_id)
         if not task:
+            logger.warning("Task %s not found.", task_id)
             return
 
         file = file_repo.get_by_id(db, task.file_id)
         if not file:
+            logger.warning("File for task %s not found.", task_id)
+            task.status = TaskStatus.FAILED
+            task.error_message = "File metadata not found in database."
+            db.commit()
             return
 
         task.status = TaskStatus.PROCESSING
@@ -46,20 +56,119 @@ def process_file(task_id_str: str) -> None:
 
         file_data = download_file_from_minio(file.storage_path)
 
-        ocr_pages_results = process_document(file, file_data)
+        callback = finalize_ocr_processing.s(task_id_str=task_id_str)
 
-        store_ocr_results(db, task, file, ocr_pages_results)
+        if "pdf" in file.file_type:
+            logger.info("Splitting PDF file: %s", file.filename)
+            images = convert_from_bytes(file_data)
+            header = group(
+                process_single_page_ocr.s(
+                    image_bytes=img_to_bytes(image),
+                    filename=f"page_{i + 1}_{file.filename}.png",
+                    page_number=i + 1,
+                )
+                for i, image in enumerate(images)
+            )
+        else:
+            logger.info("Processing single image file: %s", file.filename)
+            header = group(
+                process_single_page_ocr.s(
+                    image_bytes=file_data,
+                    filename=file.filename,
+                    page_number=1,
+                ),
+            )
 
-        total_pages = len(ocr_pages_results)
-        update_task_to_completed(db, task, file, total_pages)
+        job = chord(header, callback)
+        job.apply_async()
 
-    except (
-        ValueError,
-        RuntimeError,
-        requests.exceptions.RequestException,
-        TypeError,
-        KeyError,
-    ) as e:
+    except SQLAlchemyError:
+        logger.exception(
+            "Database error during task setup for task %s. Rolling back.",
+            task_id,
+        )
+        db.rollback()
+
+    except S3Error as e:
+        logger.exception(
+            "Failed to download file from MinIO for task %s.",
+            task_id,
+        )
+        handle_processing_error(task_id, db, f"Storage access error: {e}")
+
+    except (PDFPageCountError, PDFSyntaxError) as e:
+        logger.exception(
+            "Failed to process PDF file for task %s.",
+            task_id,
+        )
+        handle_processing_error(task_id, db, f"PDF processing error: {e}")
+
+    except CeleryError as e:
+        logger.exception(
+            "Failed to queue child tasks (chord) for task %s.",
+            task_id,
+        )
+        handle_processing_error(task_id, db, f"Task queuing error: {e}")
+
+    except Exception as e:
+        logger.exception(
+            "An unexpected error occurred"
+            " while starting processing for task %s.",
+            task_id,
+        )
+        handle_processing_error(
+            task_id,
+            db,
+            f"An unexpected error occurred: {e}",
+        )
+
+    finally:
+        db.close()
+
+
+@celery_app.task
+def process_single_page_ocr(
+    image_bytes: bytes,
+    filename: str,
+    page_number: int,
+) -> dict:
+    logger.info("Processing page %d for file: %s", page_number, filename)
+    ocr_text = call_ai_service(image_bytes, filename)
+    return {"page_number": page_number, "text": ocr_text}
+
+
+@celery_app.task
+def finalize_ocr_processing(
+    ocr_pages_results: list[dict],
+    task_id_str: str,
+) -> None:
+    task_id = uuid.UUID(task_id_str)
+    db = SessionLocal()
+    try:
+        logger.info("Finalizing processing for task %s.", task_id)
+        task = task_repo.get_by_id(db, task_id)
+        if not task:
+            logger.error("Task %s not found for finalization.", task_id)
+            return
+
+        file = file_repo.get_by_id(db, task.file_id)
+        if not file:
+            logger.error(
+                "File for task %s not found for finalization.",
+                task_id,
+            )
+            return
+
+        sorted_results = sorted(
+            ocr_pages_results,
+            key=lambda r: r["page_number"],
+        )
+
+        store_ocr_results(db, task, file, sorted_results)
+        update_task_to_completed(db, task, file, len(sorted_results))
+        logger.info("Successfully completed task %s.", task_id)
+    except Exception as e:
+        logger.exception("Error during finalization for task %s", task_id)
         handle_processing_error(task_id, db, str(e))
     finally:
         db.close()
@@ -67,7 +176,6 @@ def process_file(task_id_str: str) -> None:
 
 def download_file_from_minio(file_storage_path: str) -> bytes:
     minio_client = get_minio_client()
-
     try:
         file_object = minio_client.get_object(
             BUCKET_FILE_STORAGE,
@@ -79,37 +187,27 @@ def download_file_from_minio(file_storage_path: str) -> bytes:
         raise
 
 
-def process_pdf_pages(file_data: bytes, filename: str) -> list[dict[str, Any]]:
-    logger.info("Processing PDF file: %s", filename)
-    images = convert_from_bytes(file_data)
-    ocr_pages_results = []
-    for i, image in enumerate(images):
-        page_number = i + 1
-        img_byte_arr = BytesIO()
-        image.save(img_byte_arr, format="PNG")
-        img_bytes = img_byte_arr.getvalue()
-
-        page_filename = f"page_{page_number}_{filename}.png"
-        ocr_text = call_ai_service(img_bytes, page_filename)
-        ocr_pages_results.append(
-            {"page_number": page_number, "text": ocr_text},
+def call_ai_service(image_bytes: bytes, filename: str) -> str:
+    logger.info(
+        "Sending multipart/form-data request to AI service for file: %s",
+        filename,
+    )
+    form_data = {"job_id": str(uuid.uuid4())}
+    file_data = {"input": (filename, image_bytes, "image/png")}
+    try:
+        response = requests.post(
+            AI_SERVICE_URL,
+            data=form_data,
+            files=file_data,
+            timeout=300,
         )
-    return ocr_pages_results
-
-
-def process_single_image(
-    file_data: bytes,
-    filename: str,
-) -> list[dict[str, Any]]:
-    logger.info("Processing image file: %s", filename)
-    ocr_text = call_ai_service(file_data, filename)
-    return [{"page_number": 1, "text": ocr_text}]
-
-
-def process_document(file: File, file_data: bytes) -> list[dict[str, Any]]:
-    if "pdf" in file.file_type:
-        return process_pdf_pages(file_data, file.filename)
-    return process_single_image(file_data, file.filename)
+        response.raise_for_status()
+        result = response.json()
+        logger.info("Received response from AI service for file: %s", filename)
+        return result.get("data", {}).get("text", "")
+    except requests.exceptions.RequestException as e:
+        logger.exception("Failed to call AI service for file %s", filename)
+        raise RuntimeError(f"AI service request failed: {e}") from e
 
 
 def store_ocr_results(
@@ -120,19 +218,16 @@ def store_ocr_results(
 ) -> None:
     minio_client = get_minio_client()
     result_storage = ResultStorage(minio_client)
-
     for page_data in ocr_pages_results:
         page_number = page_data["page_number"]
-        page_text = page_data["text"]
+        page_text = page_data.get("text", "")
         result_path = f"{file.id}/page_{page_number}.json"
         result_content = json.dumps({"text": page_text})
-
         result_storage.upload_result(
             result_content,
             result_path,
             BUCKET_RESULT_STORAGE,
         )
-
         page_result_entry = PageResult(
             task_id=task.id,
             file_id=file.id,
@@ -160,24 +255,16 @@ def handle_processing_error(
 ) -> None:
     logger.exception("Processing failed for task %s", task_id)
     db.rollback()
-
     session_for_update = SessionLocal()
     try:
         task = task_repo.get_by_id(session_for_update, task_id)
-        if task:
+        if task and task.status != TaskStatus.FAILED:
             task.status = TaskStatus.FAILED
             task.error_message = str(error)
-
             session_for_update.commit()
-    except (
-        ValueError,
-        RuntimeError,
-        requests.exceptions.RequestException,
-        TypeError,
-        KeyError,
-    ):
+    except Exception:
         logger.exception(
-            "CRITICAL: Failed to update task %s status to FAILED.",
+            "Failed to update task %s status to FAILED.",
             task_id,
         )
         session_for_update.rollback()
@@ -185,32 +272,7 @@ def handle_processing_error(
         session_for_update.close()
 
 
-def call_ai_service(image_bytes: bytes, filename: str) -> str:
-    logger.info(
-        "Sending multipart/form-data request to AI service for file: %s",
-        filename,
-    )
-
-    form_data = {
-        "job_id": str(uuid.uuid4()),
-    }
-
-    file_data = {
-        "input": (filename, image_bytes, "image/png"),
-    }
-
-    try:
-        response = requests.post(
-            AI_SERVICE_URL,
-            data=form_data,
-            files=file_data,
-            timeout=300,
-        )
-        response.raise_for_status()
-        result = response.json()
-        logger.info("AI service response: %s", result)
-        logger.info("Received response from AI service for file: %s", filename)
-        return result.get("data", {}).get("text", "")
-    except requests.exceptions.RequestException as e:
-        logger.exception("Failed to call AI service for file %s", filename)
-        raise RuntimeError(f"AI service request failed: {e}") from e
+def img_to_bytes(image: Image.Image) -> bytes:
+    img_byte_arr = BytesIO()
+    image.save(img_byte_arr, format="PNG")
+    return img_byte_arr.getvalue()

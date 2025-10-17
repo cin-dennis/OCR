@@ -209,7 +209,9 @@ def get_file_result(
                 BUCKET_RESULT_STORAGE,
                 page.result_path,
             )
+            logger.info("Result: %s", result_object)
             result_data = json.loads(result_object.read().decode("utf-8"))
+            logger.info("Result: %s", result_data)
             page_results.append(
                 {
                     "page_number": page.page_number,
