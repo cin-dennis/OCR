@@ -292,12 +292,17 @@ def handle_processing_error(
             task.status = TaskStatus.FAILED
             task.error_message = str(error)
             session_for_update.commit()
-    except Exception:
+    except SQLAlchemyError:
         logger.exception(
             "Failed to update task %s status to FAILED.",
             task_id,
         )
         session_for_update.rollback()
+    except Exception:
+        logger.exception(
+            "Unexpected error while updating task %s status to FAILED.",
+            task_id,
+        )
     finally:
         session_for_update.close()
 
