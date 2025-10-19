@@ -11,12 +11,22 @@ from minio.error import S3Error
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.constant.constant import BUCKET_FILE_STORAGE, BUCKET_RESULT_STORAGE
+from app.constant.constant import (
+    BUCKET_FILE_STORAGE,
+    BUCKET_RESULT_STORAGE,
+)
 from app.db.dependencies import get_db_session
 from app.models.file import File as FileModel
 from app.models.task import Task, TaskStatus
 from app.repository.file_repository import file_repo
 from app.repository.task_repository import task_repo
+from app.schema.common import ErrorResponse
+from app.schema.files import (
+    FileDetailResponse,
+    FileResultResponse,
+    FileUploadResponse,
+    PageResult,
+)
 from app.services.file.file_service import FileService
 from app.services.minio.minio_service import get_minio_client
 from app.storage.file_storage import FileStorage
@@ -40,11 +50,11 @@ async def upload_file(
     if not file_service.is_allowed_file_type(file.content_type):
         return JSONResponse(
             status_code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-            content={
-                "code": HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
-                "message": f"File type '{file.content_type}' is not allowed."
+            content=ErrorResponse(
+                code=HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                message=f"File type '{file.content_type}' is not allowed."
                 f" Please upload a PDF, PNG, or JPG.",
-            },
+            ).model_dump(),
         )
 
     file_id = uuid.uuid4()
@@ -53,13 +63,13 @@ async def upload_file(
 
     try:
         await file_storage.upload_file(file, storage_path, BUCKET_FILE_STORAGE)
-    except S3Error as e:
+    except S3Error:
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={
-                "code": HTTPStatus.INTERNAL_SERVER_ERROR,
-                "message": f"Failed to upload file to storage: {e}",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Failed to upload file to storage",
+            ).model_dump(),
         )
 
     try:
@@ -82,7 +92,7 @@ async def upload_file(
 
         db.commit()
         db.refresh(saved_task)
-    except SQLAlchemyError as e:
+    except SQLAlchemyError:
         db.rollback()
         logger.exception(
             "Failed to save file metadata or task to database",
@@ -90,12 +100,12 @@ async def upload_file(
         get_minio_client().remove_object(BUCKET_FILE_STORAGE, storage_path)
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={
-                "code": HTTPStatus.INTERNAL_SERVER_ERROR,
-                "message": f"Failed to save file metadata to database: {e}",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Failed to save file metadata to database.",
+            ).model_dump(),
         )
-    except CeleryError as e:
+    except CeleryError:
         db.rollback()
         logger.exception(
             "Failed to queue task for file",
@@ -103,10 +113,10 @@ async def upload_file(
         get_minio_client().remove_object(BUCKET_FILE_STORAGE, storage_path)
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={
-                "code": HTTPStatus.INTERNAL_SERVER_ERROR,
-                "message": f"Failed to queue file processing task: {e}",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Failed to queue file processing task.",
+            ).model_dump(),
         )
     except Exception:
         db.rollback()
@@ -114,20 +124,20 @@ async def upload_file(
         get_minio_client().remove_object(BUCKET_FILE_STORAGE, storage_path)
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={
-                "code": HTTPStatus.INTERNAL_SERVER_ERROR,
-                "message": "Server error occurred while processing the file.",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Server error occurred while processing the file.",
+            ).model_dump(),
         )
 
     return JSONResponse(
         status_code=HTTPStatus.CREATED,
-        content={
-            "message": "File upload accepted and is being processed.",
-            "task_id": str(saved_task.id),
-            "filename": file.filename,
-            "status": TaskStatus.PENDING.value,
-        },
+        content=FileUploadResponse(
+            id=str(saved_file.id),
+            filename=saved_file.filename,
+            file_type=saved_file.file_type,
+            status=saved_task.status.value,
+        ).model_dump(),
     )
 
 
@@ -140,24 +150,22 @@ def get_file_details(
     if not file:
         return JSONResponse(
             status_code=HTTPStatus.NOT_FOUND,
-            content={
-                "code": HTTPStatus.NOT_FOUND,
-                "message": f"File with ID {file_id} not found.",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.NOT_FOUND,
+                message=f"File with ID {file_id} not found.",
+            ).model_dump(),
         )
 
     return JSONResponse(
         status_code=HTTPStatus.OK,
-        content={
-            "id": str(file.id),
-            "filename": file.filename,
-            "storage_path": file.storage_path,
-            "file_type": file.file_type,
-            "total_pages": file.total_pages,
-            "uploaded_at": file.uploaded_at.isoformat()
-            if file.uploaded_at
-            else None,
-        },
+        content=FileDetailResponse(
+            id=str(file.id),
+            filename=file.filename,
+            storage_path=file.storage_path,
+            file_type=file.file_type,
+            total_pages=file.total_pages,
+            uploaded_at=file.uploaded_at,
+        ).model_dump(),
     )
 
 
@@ -170,32 +178,35 @@ def get_file_result(
     if not file or not file.task:
         return JSONResponse(
             status_code=HTTPStatus.NOT_FOUND,
-            content={
-                "code": HTTPStatus.NOT_FOUND,
-                "message": f"OCR results of {file_id} not found.",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.NOT_FOUND,
+                message=f"File with ID {file_id} not found.",
+            ).model_dump(),
         )
 
     task = file.task
     if task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING]:
         return JSONResponse(
             status_code=HTTPStatus.ACCEPTED,
-            content={
-                "task_id": str(task.id),
-                "status": task.status.value,
-                "message": "File is still being processed."
-                " Please check back later.",
-            },
+            content=FileResultResponse(
+                file_id=str(file.id),
+                filename=file.filename,
+                status=str(task.status.value),
+                total_pages=file.total_pages,
+                results=[],
+            ).model_dump(),
         )
 
     if task.status == TaskStatus.FAILED:
         return JSONResponse(
             status_code=HTTPStatus.OK,
-            content={
-                "task_id": str(task.id),
-                "status": task.status.value,
-                "error_message": task.error_message,
-            },
+            content=FileResultResponse(
+                file_id=str(file.id),
+                filename=file.filename,
+                status=task.status.value,
+                total_pages=file.total_pages,
+                results=[],
+            ).model_dump(),
         )
 
     page_results = []
@@ -209,39 +220,48 @@ def get_file_result(
                 BUCKET_RESULT_STORAGE,
                 page.result_path,
             )
-            logger.info("Result: %s", result_object)
+
             result_data = json.loads(result_object.read().decode("utf-8"))
-            logger.info("Result: %s", result_data)
+
             page_results.append(
-                {
-                    "page_number": page.page_number,
-                    "text": result_data.get("text", ""),
-                },
+                PageResult(
+                    page_number=page.page_number,
+                    text=result_data.get("text", ""),
+                ),
             )
-    except S3Error as e:
+    except S3Error:
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={
-                "code": HTTPStatus.INTERNAL_SERVER_ERROR,
-                "message": f"Cannot load results from storage: {e}",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Failed to retrieve result from storage.",
+            ).model_dump(),
         )
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
         return JSONResponse(
             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
-            content={
-                "code": HTTPStatus.INTERNAL_SERVER_ERROR,
-                "message": f"Cannot decode results: {e}",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Malformed JSON in result data.",
+            ).model_dump(),
+        )
+    except Exception:
+        logger.exception("Failed to retrieve or parse file results")
+        return JSONResponse(
+            status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+            content=ErrorResponse(
+                code=HTTPStatus.INTERNAL_SERVER_ERROR,
+                message="Server error occurred while retrieving file results.",
+            ).model_dump(),
         )
 
     return JSONResponse(
         status_code=HTTPStatus.OK,
-        content={
-            "file_id": str(file.id),
-            "filename": file.filename,
-            "status": task.status.value,
-            "total_pages": file.total_pages,
-            "results": page_results,
-        },
+        content=FileResultResponse(
+            file_id=str(file.id),
+            filename=file.filename,
+            status=task.status.value,
+            total_pages=file.total_pages,
+            results=page_results,
+        ).model_dump(),
     )
