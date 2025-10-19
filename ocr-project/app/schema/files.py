@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
@@ -15,7 +17,7 @@ class FileDetailResponse(BaseModel):
     storage_path: str
     file_type: str
     total_pages: int
-    uploaded_at: str
+    uploaded_at: datetime | None = None
 
 
 class PageResult(BaseModel):

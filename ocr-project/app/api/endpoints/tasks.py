@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db_session
 from app.repository.task_repository import task_repo
+from app.schema.common import ErrorResponse
+from app.schema.task import TaskStatusResponse
 
 router = APIRouter()
 
@@ -20,23 +22,19 @@ def get_task_status(
     if not task:
         return JSONResponse(
             status_code=HTTPStatus.NOT_FOUND,
-            content={
-                "code": HTTPStatus.NOT_FOUND,
-                "message": f"Task with ID {task_id} not found.",
-            },
+            content=ErrorResponse(
+                code=HTTPStatus.NOT_FOUND,
+                message=f"Task with ID {task_id} not found.",
+            ),
         )
 
     return JSONResponse(
         status_code=HTTPStatus.OK,
-        content={
-            "task_id": str(task.id),
-            "status": task.status.value,
-            "error_message": task.error_message,
-            "created_at": task.created_at.isoformat()
-            if task.created_at
-            else None,
-            "updated_at": task.updated_at.isoformat()
-            if task.updated_at
-            else None,
-        },
+        content=TaskStatusResponse(
+            task_id=str(task.id),
+            status=task.status.value,
+            error_message=task.error_message,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+        ).model_dump(mode="json"),
     )

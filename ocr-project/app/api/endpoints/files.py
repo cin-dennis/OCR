@@ -164,8 +164,8 @@ def get_file_details(
             storage_path=file.storage_path,
             file_type=file.file_type,
             total_pages=file.total_pages,
-            uploaded_at=str(file.uploaded_at),
-        ).model_dump(),
+            uploaded_at=file.uploaded_at,
+        ).model_dump(mode="json"),
     )
 
 
