@@ -36,75 +36,62 @@ logger = logging.getLogger(__name__)
 @celery_app.task
 def process_file(task_id_str: str) -> None:
     task_id = uuid.UUID(task_id_str)
-    db = SessionLocal()
-    try:
-        task = task_repo.get_by_id(db, task_id)
-        if not task:
-            logger.warning("Task %s not found.", task_id)
+
+    with SessionLocal() as db:
+        try:
+            task = task_repo.get_by_id(db, task_id)
+            if not task:
+                logger.warning("Task %s not found.", task_id)
+                return
+
+            file = file_repo.get_by_id(db, task.file_id)
+            if not file:
+                logger.warning("File for task %s not found.", task_id)
+                task.status = TaskStatus.FAILED
+                task.error_message = "File metadata not found in database."
+                db.commit()
+                return
+        except SQLAlchemyError:
+            logger.exception(
+                "Database error during task setup for task %s.",
+                task_id,
+            )
             return
 
-        file = file_repo.get_by_id(db, task.file_id)
-        if not file:
-            logger.warning("File for task %s not found.", task_id)
-            task.status = TaskStatus.FAILED
-            task.error_message = "File metadata not found in database."
+        try:
+            file_data = download_file_from_minio(file.storage_path)
+        except S3Error as e:
+            logger.exception(
+                "Failed to download file from MinIO for task %s.",
+                task_id,
+            )
+            handle_processing_error(task_id, f"Storage access error: {e}")
+            return
+
+        try:
+            callback = finalize_ocr_processing.s(task_id_str=task_id_str)
+            header = prepare_ocr_tasks(file, file_data)
+            chord(header, callback).apply_async()
+            task.status = TaskStatus.PROCESSING
             db.commit()
-            return
-
-        file_data = download_file_from_minio(file.storage_path)
-
-        callback = finalize_ocr_processing.s(task_id_str=task_id_str)
-
-        header = prepare_ocr_tasks(file, file_data)
-
-        job = chord(header, callback)
-        job.apply_async()
-
-        task.status = TaskStatus.PROCESSING
-        db.commit()
-
-    except SQLAlchemyError:
-        logger.exception(
-            "Database error during task setup for task %s. Rolling back.",
-            task_id,
-        )
-        db.rollback()
-
-    except S3Error as e:
-        logger.exception(
-            "Failed to download file from MinIO for task %s.",
-            task_id,
-        )
-        handle_processing_error(task_id, db, f"Storage access error: {e}")
-
-    except (PDFPageCountError, PDFSyntaxError) as e:
-        logger.exception(
-            "Failed to process PDF file for task %s.",
-            task_id,
-        )
-        handle_processing_error(task_id, db, f"PDF processing error: {e}")
-
-    except CeleryError as e:
-        logger.exception(
-            "Failed to queue child tasks (chord) for task %s.",
-            task_id,
-        )
-        handle_processing_error(task_id, db, f"Task queuing error: {e}")
-
-    except Exception as e:
-        logger.exception(
-            "An unexpected error occurred"
-            " while starting processing for task %s.",
-            task_id,
-        )
-        handle_processing_error(
-            task_id,
-            db,
-            f"An unexpected error occurred: {e}",
-        )
-
-    finally:
-        db.close()
+        except (PDFPageCountError, PDFSyntaxError) as e:
+            logger.exception(
+                "Failed to process PDF file for task %s.",
+                task_id,
+            )
+            handle_processing_error(task_id, f"PDF processing error: {e}")
+        except CeleryError as e:
+            logger.exception(
+                "Failed to queue child tasks for task %s.",
+                task_id,
+            )
+            handle_processing_error(task_id, f"Task queuing error: {e}")
+        except Exception as e:
+            logger.exception(
+                "Unexpected error while processing task %s.",
+                task_id,
+            )
+            handle_processing_error(task_id, f"Unexpected error: {e}")
 
 
 def prepare_ocr_tasks(file: File, file_data: bytes) -> group:
@@ -177,7 +164,11 @@ def finalize_ocr_processing(
         )
 
         store_ocr_results(db, task, file, sorted_results)
-        update_task_to_completed(db, task, file, len(sorted_results))
+
+        file.total_pages = len(sorted_results)
+        task.status = TaskStatus.COMPLETED
+        db.commit()
+
         logger.info("Successfully completed task %s.", task_id)
     except Exception as e:
         logger.exception("Error during finalization for task %s", task_id)
@@ -284,44 +275,28 @@ def store_ocr_results(
         page_result_repo.add(db, page_result_entry)
 
 
-def update_task_to_completed(
-    db: Session,
-    task: Task,
-    file: File,
-    total_pages: int,
-) -> None:
-    file.total_pages = total_pages
-    task.status = TaskStatus.COMPLETED
-    db.commit()
-
-
 def handle_processing_error(
     task_id: uuid.UUID,
-    db: Session,
     error: str,
 ) -> None:
-    logger.exception("Processing failed for task %s", task_id)
-    db.rollback()
-    session_for_update = SessionLocal()
-    try:
-        task = task_repo.get_by_id(session_for_update, task_id)
-        if task and task.status != TaskStatus.FAILED:
-            task.status = TaskStatus.FAILED
-            task.error_message = str(error)
-            session_for_update.commit()
-    except SQLAlchemyError:
-        logger.exception(
-            "Failed to update task %s status to FAILED.",
-            task_id,
-        )
-        session_for_update.rollback()
-    except Exception:
-        logger.exception(
-            "Unexpected error while updating task %s status to FAILED.",
-            task_id,
-        )
-    finally:
-        session_for_update.close()
+    with SessionLocal() as session:
+        try:
+            task = task_repo.get_by_id(session, task_id)
+            if task:
+                task.status = TaskStatus.FAILED
+                task.error_message = str(error)
+                session.commit()
+        except SQLAlchemyError:
+            logger.exception(
+                "Database error while marking task %s as FAILED.",
+                task_id,
+            )
+            session.rollback()
+        except Exception:
+            logger.exception(
+                "Unexpected error while marking task %s as FAILED.",
+                task_id,
+            )
 
 
 def img_to_bytes(image: Image.Image) -> bytes:
