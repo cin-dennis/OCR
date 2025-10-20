@@ -3,7 +3,7 @@ from io import BytesIO
 
 from minio import Minio, S3Error
 
-from app.services.minio.minio_service import (
+from app.helper.minio.minio import (
     ensure_bucket_exists,
 )
 

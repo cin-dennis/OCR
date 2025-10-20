@@ -134,6 +134,9 @@ services:
       - 5050:80
     depends_on:
       - db
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
 volumes:
   postgres_data:
   minio_data:
+  pgadmin_data:

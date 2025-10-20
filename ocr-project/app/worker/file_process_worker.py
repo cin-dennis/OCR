@@ -19,13 +19,13 @@ from app.constant.constant import (
     BUCKET_RESULT_STORAGE,
 )
 from app.db.session import SessionLocal
+from app.helper.minio.minio import get_minio_client
 from app.models import File, PageResult, Task
 from app.models.page_ocr_result import PageOCRResult
 from app.models.task import TaskStatus
 from app.repository.file_repository import file_repo
 from app.repository.page_result_repository import page_result_repo
 from app.repository.task_repository import task_repo
-from app.services.minio.minio_service import get_minio_client
 from app.storage.result_storage import ResultStorage
 
 from .celery import celery_app
@@ -172,7 +172,7 @@ def finalize_ocr_processing(
         logger.info("Successfully completed task %s.", task_id)
     except Exception as e:
         logger.exception("Error during finalization for task %s", task_id)
-        handle_processing_error(task_id, db, str(e))
+        handle_processing_error(task_id, str(e))
     finally:
         db.close()
 
